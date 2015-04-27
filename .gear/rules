@@ -1,0 +1,3 @@
+copy: altlinux/*
+spec: altlinux/udevil.spec
+tar: upstream:. name=@name@-@version@
