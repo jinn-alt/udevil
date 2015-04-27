@@ -33,6 +33,7 @@ automounting daemon.
 %files -f %name.lang
 %dir %_sysconfdir/%name
 %_sysconfdir/%name/*
+%_sysconfdir/sysconfig/*
 /lib/systemd/system/*
 %_bindir/*
 
