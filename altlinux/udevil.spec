@@ -20,6 +20,7 @@ automounting daemon.
 
 %prep
 %setup
+%patch0 -p1
 
 %build
 %autoreconf
