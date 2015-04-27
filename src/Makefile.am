@@ -11,7 +11,7 @@ INSTALL_SRC = $(top_builddir)/src
 
 install-data-hook:
 	test -z $(INSTALL_DIR) || mkdir -p -- $(INSTALL_DIR)
-	$(INSTALL_DATA) -o root -g root -m 4755 -D $(INSTALL_SRC)/udevil $(INSTALL_DIR)/udevil
+	$(INSTALL_DATA) -m 4755 -D $(INSTALL_SRC)/udevil $(INSTALL_DIR)/udevil
 
 uninstall-hook:
 	rm -f $(INSTALL_DIR)/udevil
