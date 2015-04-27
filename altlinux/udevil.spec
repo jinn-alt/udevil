@@ -31,6 +31,10 @@ automounting daemon.
 %find_lang %name
 
 %files -f %name.lang
+%dir %_sysconfdir/%name
+%_sysconfdir/%name/*
+/lib/systemd/system/*
+%_bindir/*
 
 %changelog
 * Mon Apr 27 2015 Dmitriy Khanzhin <jinn@altlinux.org> 0.4.3-alt0.1

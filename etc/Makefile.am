@@ -9,9 +9,9 @@ install-data-hook:
 	test -f $(DESTDIR)/etc/udevil/udevil.conf || $(INSTALL_DATA) \
 				$(srcdir)/udevil.conf $(DESTDIR)/etc/udevil/udevil.conf
 if ADD_SYSTEMD
-	test -d $(DESTDIR)/etc/conf.d || mkdir -p -- $(DESTDIR)/etc/conf.d
-	test -f $(DESTDIR)/etc/conf.d/devmon || $(INSTALL_DATA) \
-				$(srcdir)/systemd/devmon $(DESTDIR)/etc/conf.d/devmon
+	test -d $(DESTDIR)/etc/sysconfig || mkdir -p -- $(DESTDIR)/etc/sysconfig
+	test -f $(DESTDIR)/etc/sysconfig/devmon || $(INSTALL_DATA) \
+				$(srcdir)/systemd/devmon $(DESTDIR)/etc/sysconfig/devmon
 	test -d $(DESTDIR)/lib/systemd/system || \
 				mkdir -p -- $(DESTDIR)/lib/systemd/system
 	$(INSTALL_DATA) $(srcdir)/systemd/devmon@.service \
