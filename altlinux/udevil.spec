@@ -1,6 +1,6 @@
 Name: udevil
 Version: 0.4.3
-Release: alt0.1
+Release: alt0.M70T.0.1
 
 Summary: Command line program which mounts and unmounts removable devices
 License: GPL-3.0+
@@ -8,6 +8,7 @@ Group: File tools
 Url: https://github.com/IgnorantGuru/udevil
 
 Source0: %name-%version.tar
+Patch0: %name-%version-alt-specific.patch
 
 BuildPreReq: intltool glib2-devel libudev-devel
 
@@ -36,7 +37,8 @@ automounting daemon.
 %_sysconfdir/sysconfig/*
 /lib/systemd/system/*
 %_bindir/*
+%doc AUTHORS ChangeLog README
 
 %changelog
-* Mon Apr 27 2015 Dmitriy Khanzhin <jinn@altlinux.org> 0.4.3-alt0.1
-- draft build for AltLinux
+* Mon Apr 27 2015 Dmitriy Khanzhin <jinn@altlinux.org> 0.4.3-alt0.M70T.0.1
+- initial build for AltLinux

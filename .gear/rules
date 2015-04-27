@@ -1,3 +1,4 @@
 copy: altlinux/*
 spec: altlinux/udevil.spec
-tar: . name=@name@-@version@
+tar: upstream:. name=@name@-@version@
+diff: upstream:. alt-specific:. name=@name@-@version@-alt-specific.patch
