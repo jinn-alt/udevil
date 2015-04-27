@@ -12,8 +12,8 @@ if ADD_SYSTEMD
 	test -d $(DESTDIR)/etc/conf.d || mkdir -p -- $(DESTDIR)/etc/conf.d
 	test -f $(DESTDIR)/etc/conf.d/devmon || $(INSTALL_DATA) \
 				$(srcdir)/systemd/devmon $(DESTDIR)/etc/conf.d/devmon
-	test -d $(DESTDIR)/$(libdir)/systemd/system || \
-				mkdir -p -- $(DESTDIR)/$(libdir)/systemd/system
+	test -d $(DESTDIR)/lib/systemd/system || \
+				mkdir -p -- $(DESTDIR)/lib/systemd/system
 	$(INSTALL_DATA) $(srcdir)/systemd/devmon@.service \
-				$(DESTDIR)/$(libdir)/systemd/system/devmon@.service
+				$(DESTDIR)/lib/systemd/system/devmon@.service
 endif
