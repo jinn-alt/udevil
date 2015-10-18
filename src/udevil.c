@@ -1,5 +1,5 @@
 /*
- * udevil.c    GPL v3  Copyright 2012
+ * udevil.c    GPL3+  Copyright 2015  IgnorantGuru <ignorantguru@gmx.com>
 */
 
 #include <stdio.h>
@@ -64,6 +64,10 @@
 #define ALLOWED_OPTIONS "nosuid,noexec,nodev,user=$USER,uid=$UID,gid=$GID"
 #define ALLOWED_TYPES "$KNOWN_FILESYSTEMS,smbfs,cifs,nfs,ftpfs,curlftpfs,sshfs,file,tmpfs,ramfs"
 #define MAX_LOG_DAYS 60   // don't set this too high
+
+// udisks2 changed its media dir from /run/media/$USER to /media/$USER
+// NOTE: parents not created
+#define AUTO_MEDIA_DIR "/media"
 
 //#define OPT_REMOVE   // build with under-development remove function
 
@@ -772,7 +776,7 @@ gboolean test_config( const char* var, const char* type )
     return FALSE;
 }
 
-static char* parse_config()
+static char* parse_config( int* config_warning )
 {
     FILE* file;
     char line[ 2048 ];
@@ -784,12 +788,14 @@ static char* parse_config()
     char* str;
     char* msg = NULL;
 
-    conf_path = g_strdup_printf( "/etc/udevil/udevil-user-%s.conf", g_get_user_name() );
+    *config_warning = 0;
+    conf_path = g_strdup_printf( "%s/udevil/udevil-user-%s.conf", SYSCONFDIR,
+                                                        g_get_user_name() );
     file = fopen( conf_path, "r" );
     if ( !file )
     {
         g_free( conf_path );
-        conf_path = g_strdup_printf( "/etc/udevil/udevil.conf" );
+        conf_path = g_strdup_printf( "%s/udevil/udevil.conf", SYSCONFDIR );
         file = fopen( conf_path, "r" );
     }
     drop_privileges( 0 );  // file is open now so drop priv
@@ -802,14 +808,12 @@ static char* parse_config()
             if ( !g_utf8_validate( line, -1, NULL ) )
             {
                 fprintf( stderr, _("udevil: error 2: %s line %d is not valid UTF-8\n"), conf_path, lc );
-                fclose( file );
-                return NULL;
+                goto _parse_error;
             }
             if ( !g_str_has_suffix( line, "\n" ) )
             {
                 fprintf( stderr, _("udevil: error 3: %s line %d is too long\n"), conf_path, lc );
-                fclose( file );
-                return NULL;
+                goto _parse_error;
             }
             strtok( line, "\r\n" );
             g_strstrip( line );
@@ -819,8 +823,7 @@ static char* parse_config()
             {
                 fprintf( stderr, _("udevil: error 4: %s line %d syntax error:\n"), conf_path, lc );
                 fprintf( stderr, "               %s\n", line );
-                fclose( file );
-                return NULL;
+                goto _parse_error;
             }
             equal[0] = '\0';
             var = g_strdup( line );
@@ -832,16 +835,14 @@ static char* parse_config()
             {
                 fprintf( stderr, _("udevil: error 5: %s line %d syntax error:\n"), conf_path, lc );
                 fprintf( stderr, "               %s\n", line );
-                fclose( file );
-                return NULL;
+                goto _parse_error;
             }
             if ( read_config( var, NULL ) )
             {
                 fprintf( stderr, _("udevil: error 6: %s line %d duplicate assignment:\n"),
                                                                 conf_path, lc );
                 fprintf( stderr, "               %s\n", line );
-                fclose( file );
-                return NULL;
+                goto _parse_error;
             }
             if ( g_str_has_prefix( var, "allowed_media_dirs" ) ||
                                     g_str_has_prefix( var, "allowed_options" ) ||
@@ -900,9 +901,11 @@ static char* parse_config()
     }
     else
     {
-        msg = g_strdup_printf( _("udevil: warning 7: /etc/udevil/udevil.conf could not be read\n") );
+        msg = g_strdup_printf( _("udevil: warning 7: cannot read config file %s\n"),
+                                                                conf_path );
         g_free( conf_path );
         conf_path = NULL;
+        *config_warning = 1;
     }
 
     if ( ( str = read_config( "log_file", NULL ) ) && str[0] != '\0' )
@@ -914,6 +917,13 @@ static char* parse_config()
         g_free( conf_path );
     }
     return msg;
+
+_parse_error:
+    restore_privileges();
+    fclose( file );
+    drop_privileges( 0 );    
+    g_free( conf_path );
+    return NULL;
 }
 
 static void wlog( const char* msg, const char* sub1, int volume )
@@ -1162,7 +1172,6 @@ static void dump_log()
 static gboolean validate_in_list( const char* name, const char* type, const char* test )
 {
     char* list = NULL;
-    char* str;
     char* comma;
     char* element;
     char* selement;
@@ -1173,6 +1182,11 @@ static gboolean validate_in_list( const char* name, const char* type, const char
     if ( !( list = read_config( name, type ) ) )
         return FALSE;
 
+    // these names support git-style /** suffix for recursive match
+    gboolean depth = !strcmp( name, "allowed_files" ) ||
+                     !strcmp( name, "forbidden_files" ) ||
+                     !strcmp( name, "allowed_media_dirs" );
+    
 //printf("list[%s_%s] = {%s}\n", name, type, list );
     while ( list && list[0] )
     {
@@ -1188,9 +1202,41 @@ static gboolean validate_in_list( const char* name, const char* type, const char
         }
         selement = g_strstrip( element );
         if ( selement[0] == '\0' )
+        {
+            g_free( element );
             continue;
+        }
 //printf("    selement = {%s}\n", selement );
-        if ( strcmp( selement, "*" ) == 0 ||
+
+        if ( strstr( selement, "**" ) )
+        {
+            // test for valid git-style /** suffix
+            if ( depth && g_str_has_suffix( selement, "/**" ) )
+            {
+                selement[strlen( selement ) - 2] = '\0';
+                if ( !strchr( selement, '*' ) && !strchr( selement, '?' ) )
+                {
+                    if ( g_str_has_prefix( test, selement ) )
+                    {
+                        g_free( element );
+                        return TRUE;
+                    }
+                    else
+                    {
+                        g_free( element );
+                        continue;
+                    }
+                }
+            }
+            // fall thru means invalid use
+            if ( depth )
+                wlog( _("udevil: warning 124: invalid use of /** suffix in pattern '%s'\n"),
+                                                                selement, 1 );
+            else
+                wlog( _("udevil: warning 125: ** wildcard not allowed in %s\n"),
+                                                                name, 1 );
+        }
+        else if ( strcmp( selement, "*" ) == 0 ||
                                 fnmatch( selement, test, FNM_PATHNAME ) == 0 )
         {
             g_free( element );
@@ -1345,7 +1391,7 @@ static char* get_ip( const char* hostname )
     struct addrinfo *result;
     char* ret = NULL;
 
-    if ( !hostname )
+    if ( !( hostname && hostname[0] ) )
         return NULL;
 
     memset( &hints, 0, sizeof( struct addrinfo ) );
@@ -2299,31 +2345,29 @@ static gboolean valid_mount_path( const char* path, char** errmsg )
     return !msg;
 }
 
-static gboolean create_run_media()
+static gboolean create_auto_media()
 {
     char* str;
     gboolean ret = FALSE;
     
-    // create /run/media/$USER
-    char* run_media = g_build_filename( "/run/media", g_get_user_name(), NULL );
+    // create /media/$USER
+    char* auto_media = g_build_filename( AUTO_MEDIA_DIR, g_get_user_name(), NULL );
     restore_privileges();
-    wlog( "udevil: mkdir %s\n", run_media, 0 );
-    mkdir( "/run", S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH );
-    chown( "/run", 0, 0 );
-    mkdir( "/run/media", S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH );
-    chown( "/run/media", 0, 0 );
-    mkdir( run_media, S_IRWXU );
-    chown( run_media, 0, 0 );
-    // set acl   /usr/bin/setfacl -m u:$USER:rx /run/media/$USER
+    wlog( "udevil: mkdir %s\n", auto_media, 0 );
+    mkdir( AUTO_MEDIA_DIR, S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH );
+    chown( AUTO_MEDIA_DIR, 0, 0 );
+    mkdir( auto_media, S_IRWXU );
+    chown( auto_media, 0, 0 );
+    // set acl   /usr/bin/setfacl -m u:$USER:rx /media/$USER
     gchar *argv[5] = { NULL };
     int a = 0;
     argv[a++] = g_strdup( read_config( "setfacl_program", NULL ) );
     argv[a++] = g_strdup( "-m" );
     argv[a++] = g_strdup_printf( "u:%s:rx", g_get_user_name() );
-    argv[a++] = g_strdup( run_media );
+    argv[a++] = g_strdup( auto_media );
     str = g_strdup_printf( "udevil: %s -m u:%s:rx %s\n",
                             read_config( "setfacl_program", NULL ),
-                            g_get_user_name(), run_media );
+                            g_get_user_name(), auto_media );
     wlog( str, NULL, 0 );
     g_free( str );
     if ( !g_spawn_sync( NULL, argv, NULL,
@@ -2333,20 +2377,21 @@ static gboolean create_run_media()
                             read_config( "setfacl_program", NULL ), 1 );
     drop_privileges( 0 );
     // test
-    if ( g_file_test( run_media, G_FILE_TEST_IS_DIR ) &&
-                    g_access( run_media, R_OK | X_OK ) != 0 )
+    if ( g_file_test( auto_media, G_FILE_TEST_IS_DIR ) &&
+                    g_access( auto_media, R_OK | X_OK ) != 0 )
     {
-        // setfacl apparently failed so fallback to normal permissions
-        wlog( _("udevil: warning 25: setfacl on %s failed, falling back to 'rwxr-xr-x'\n"),
-                                                            run_media, 1 );
+        // setfacl apparently failed so fallback to udisks2 fallback permissions
+        wlog( _("udevil: warning 25: setfacl on %s failed, falling back to 'user:root rwx------'\n"),
+                                                            auto_media, 1 );
         restore_privileges();
-        chmod( run_media, S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH );
+        chown( auto_media, orig_ruid, 0 );
+        chmod( auto_media, S_IRWXU );
         drop_privileges( 0 );
     }
-    if ( g_file_test( run_media, G_FILE_TEST_IS_DIR ) &&
-                g_access( run_media, R_OK | X_OK ) == 0 )
+    if ( g_file_test( auto_media, G_FILE_TEST_IS_DIR ) &&
+                g_access( auto_media, R_OK | X_OK ) == 0 )
         ret = TRUE;
-    g_free( run_media );
+    g_free( auto_media );
     return ret;
 }
 
@@ -2361,7 +2406,7 @@ static char* get_default_mount_dir( const char* type )
     if ( !( list = read_config( "allowed_media_dirs", type ) ) )
         return NULL;
 
-    char* run_media = g_build_filename( "/run/media", g_get_user_name(), NULL );
+    char* auto_media = g_build_filename( AUTO_MEDIA_DIR, g_get_user_name(), NULL );
     while ( list && list[0] )
     {
         if ( comma = strchr( list, ',' ) )
@@ -2385,20 +2430,20 @@ static char* get_default_mount_dir( const char* type )
         {
             str = g_strdup( selement );
             g_free( element );
-            g_free( run_media );
+            g_free( auto_media );
             return str;
         }
-        else if ( !g_strcmp0( selement, run_media ) )
+        else if ( !g_strcmp0( selement, auto_media ) )
         {
-            if ( create_run_media() )
+            if ( create_auto_media() )
             {
                 g_free( element );
-                return run_media;
+                return auto_media;
             }
         }
         g_free( element );
     }
-    g_free( run_media );
+    g_free( auto_media );
     return NULL;
 }
 
@@ -2627,7 +2672,7 @@ static int parse_network_url( const char* url, const char* fstype,
         {
             str[0] = '\0';
             if ( xurl[1] != '\0' )
-                nm->host = g_strdup( xurl + 1 );
+                nm->host = g_strdup_printf( "[%s]", xurl + 1 );
             if ( str[1] == ':' && str[2] != '\0' )
                 nm->port = g_strdup( str + 1 );
         }
@@ -2690,11 +2735,23 @@ static int parse_network_url( const char* url, const char* fstype,
     }
 
     // lookup ip
-    if ( !( nm->ip = get_ip( nm->host ) ) || ( nm->ip && nm->ip[0] == '\0' ) )
+    char* tmphost = g_strdup( nm->host );
+    if ( tmphost && tmphost[0] == '[' && strchr( tmphost, ':' ) &&
+                                         g_str_has_suffix( tmphost, "]" ) )
+    {
+        // ipv6 literal - strip [] for get_ip
+        str = tmphost;
+        tmphost = g_strdup( str + 1 );
+        g_free( str );
+        tmphost[strlen( tmphost ) - 1] = '\0';
+    }
+    if ( !( nm->ip = get_ip( tmphost ) ) || ( nm->ip && nm->ip[0] == '\0' ) )
     {
         wlog( _("udevil: error 36: lookup host '%s' failed\n"), nm->host, 2 );
+        g_free( tmphost );
         goto _net_free;
     }
+    g_free( tmphost );
 
     // valid
     *netmount = nm;
@@ -2949,7 +3006,27 @@ _get_type:
                 {
                     if ( g_strcmp0( data->device_file, "tmpfs" ) &&
                                         g_strcmp0( data->device_file, "ramfs" ) )
+                    {
+                        // found device file of mountpoint
+                        if ( g_str_has_prefix( data->device_file, "//" ) &&
+                                    strchr( data->device_file, ':' ) &&
+                                    data->device_file[2] != '[' )
+                        {
+                            // unmounting mountpoint of cifs with ipv6 literal
+                            // cifs ipv6 mtab format: //::1/share
+                            // add literal brackets:  //[::1]/share
+                            str = g_strdup( data->device_file + 2 );
+                            if ( str2 = strchr( str, '/' ) )
+                                str2[0] = '\0';
+                            g_free( data->device_file );
+                            data->device_file = g_strdup_printf( "//[%s]%s%s",
+                                                    str,
+                                                    str2 ? "/" : "",
+                                                    str2 ? str2 + 1 : "" );
+                            g_free( str );
+                        }
                         goto _get_type;
+                    }
                 }
                 else
                 {
@@ -3280,15 +3357,15 @@ _get_type:
             }
             // get parent dir
             parent_dir = g_path_get_dirname( data->point );
-            // create parent dir /run/media/$USER ?
-            char* run_media = g_build_filename( "/run/media", g_get_user_name(), NULL );
-            if ( !g_strcmp0( parent_dir, run_media ) &&
+            // create parent dir /media/$USER ?
+            char* auto_media = g_build_filename( AUTO_MEDIA_DIR, g_get_user_name(), NULL );
+            if ( !g_strcmp0( parent_dir, auto_media ) &&
                     validate_in_list( "allowed_media_dirs", fstype, parent_dir ) &&
                     !g_file_test( parent_dir, G_FILE_TEST_EXISTS ) )
             {
-                create_run_media();
+                create_auto_media();
             }
-            g_free( run_media );
+            g_free( auto_media );
             // canonicalize parent
             if ( !get_realpath( &parent_dir ) )
             {
@@ -3605,7 +3682,7 @@ _get_type:
         {
             // ftpfs
             // eg mount -n -t ftpfs none /mnt/ftpfs -o ip=192.168.1.100 user=jim pass=123abc port=21 root=/pub/updates
-            net_opts = g_strdup_printf( "ip=%s", netmount->ip );
+            net_opts = g_strdup( "" );
             if ( netmount->user )
             {
                 str = net_opts;
@@ -3769,6 +3846,37 @@ _get_type:
         fstype = g_strdup( "fuse" );
     }
 
+    // add option ip= for cifs ipv6 literal
+    // This is done after valid options test since ip= should not be
+    // an allowed option
+    if ( type == MOUNT_NET &&
+                ( !strcmp( fstype, "smbfs" ) || !strcmp( fstype, "cifs" ) ) )
+    {
+        if ( netmount->host && netmount->host[0] == '[' &&
+                                strchr( netmount->host, ':' ) &&
+                                g_str_has_suffix( netmount->host, "]" ) )
+        {
+            // ipv6 literal as host - cifs requires special ip= option
+            str = options;
+            options = g_strdup_printf( "%s%sip=%s", str && str[0] ? str : "",
+                                                str && str[0] ? "," : "",
+                                                netmount->ip );
+            g_free( str );
+        }
+    }
+
+    // add option ip= for ftpfs
+    // This is done after valid options test since ip= should not be
+    // an allowed option
+    if ( type == MOUNT_NET && !strcmp( fstype, "ftpfs" ) )
+    {
+        str = options;
+        options = g_strdup_printf( "%s%sip=%s", str && str[0] ? str : "",
+                                                str && str[0] ? "," : "",
+                                                netmount->ip );
+        g_free( str );
+    }
+    
     // no point and not remount
     if ( !data->point && !remount )
     {
@@ -4900,7 +5008,10 @@ static void show_help()
     printf( _("HELP  -  Show this help\n") );
     printf( "    udevil help|--help|-h\n" );
     printf( "\n" );
-    printf( "http://ignorantguru.github.com/udevil/  %s\n", _("See /etc/udevil/udevil.conf for config.") );
+    /* For config see /etc/udevil/udevil.conf */
+    printf( "http://ignorantguru.github.io/udevil/  %s %s/udevil/udevil.conf\n",
+                                               _("For config see"),
+                                               SYSCONFDIR );
     printf( _("For automounting with udevil run 'devmon --help'\n") );
 
     printf( "\n" );
@@ -4911,6 +5022,7 @@ int main( int argc, char **argv )
     struct stat statbuf;
     char* str;
     char* config_msg = NULL;
+    int config_warning = 0;
 
 #ifdef ENABLE_NLS
     //printf ("Locale is: %s\n", setlocale(LC_ALL,NULL) );
@@ -4942,8 +5054,8 @@ printf("\n-----------------------\n");
 
 //printf( "R=%d:%d E=%d:%d\n", getuid(), getgid(), geteuid(), getegid() );
 
-    // read config
-    if ( !( config_msg = parse_config() ) )
+    // read config - success returns normal "read config" msg
+    if ( !( config_msg = parse_config( &config_warning ) ) )
         return 1;
 
     drop_privileges( 0 );
@@ -4997,10 +5109,9 @@ printf("\n-----------------------\n");
         wlog( str, NULL, 0 );
         g_free( str );
     }
-    if ( config_msg && strcmp( config_msg,
-                                _("udevil: read config /etc/udevil/udevil.conf\n") ) )
-        // this only works for english
-        wlog( config_msg, NULL, strstr( config_msg, "warning:" ) ? 1 : 0 );
+
+    if ( config_warning == 1 )
+        wlog( config_msg, NULL, 1 );
     g_free( config_msg );
 
     // init data
